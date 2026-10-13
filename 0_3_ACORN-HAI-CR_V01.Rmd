@@ -1,0 +1,1216 @@
+---
+title: "ACORN-HAI-CR_clean raw AUG 2025_V11_continue ACORN-HAI"
+author: "Kim Anh"
+date: "2026-09-04"
+output: html_document
+---
+
+# Load packages
+```{r}
+rm(list = ls())
+suppressPackageStartupMessages({
+  require(pacman)
+  pacman::p_load(openxlsx,
+                 data.table,
+                 tidyverse,
+                 devtools,
+                 magrittr,
+                 dplyr,
+                 countrycode,
+                 lubridate,
+                 purrr,
+                 stringr,
+                 rlang,
+                 ggpubr,
+                 plotly)
+})
+```
+# Define working directory
+```{r}
+wd <- "./"
+setwd(wd)
+```
+# Import raw data with revised IDs
+```{r}
+#
+data_01 <- readRDS("data/clean raw data/F01.RData")
+data_02 <- readRDS("data/clean raw data/F02.RData")
+data_03 <- readRDS("data/clean raw data/F03.RData")
+data_04 <- readRDS("data/clean raw data/F04.RData")
+data_05 <- readRDS("data/clean raw data/F07a.RData")
+data_06 <- readRDS("data/clean raw data/F07b.RData")
+data_07 <- readRDS("data/clean raw data/F07c.RData")
+data_08 <- readRDS("data/clean raw data/F07d.RData")
+data_09 <- readRDS("data/clean raw data/F07e.RData")
+data_10 <- readRDS("data/clean raw data/F07m.RData")
+
+###
+```
+# Import ACORN-HAI data
+```{r}
+#
+df_baseline_01 <- readRDS("data/clean data/clean/baseline_cr.RData")
+
+ast <- readRDS("data/clean data/ast_all_index.RData")
+
+anti_treat_mono <- readRDS("data/clean data/anti_treat_index.RData") # mono infections only
+anti_treat_poly <- readRDS("data/clean data/anti_treat_index_poly.RData") # both mono + poly infections
+
+vap_bsi_index <- readRDS("data/clean data/vap_bsi_index.RData")
+episode_for_inc <- readRDS("data/clean data/episode_for_incidence.RData")
+inf_add <- readRDS("data/clean data/infection_types_index.RData")
+
+###
+```
+# F02
+```{r}
+###
+# Filter IDs
+df_02 <- vap_bsi_index[which(vap_bsi_index$recordid %in% df_baseline_01$recordid), ]
+
+#
+df_02_used <- df_02 %>%
+  dplyr::select("recordid", "redcap_event_name",
+         "ser_abnormal_temp_adult", "hai_have_med_device___vent"
+         )
+
+#
+df_02_check <- df_02_used %>%
+  group_by(recordid) %>%
+  summarise(
+    has_vap = any(grepl("^vap", redcap_event_name)),
+    has_bsi = any(grepl("^bsi", redcap_event_name))
+  ) %>%
+  filter(has_vap & has_bsi)
+
+# Convert Y,N --> 1,0
+df_02_used <- df_02_used %>%
+  mutate(
+    abnormal_temp = case_when(
+      ser_abnormal_temp_adult == "Y" ~ 1,
+      ser_abnormal_temp_adult == "N" ~ 0,
+      TRUE ~ NA_real_
+    )
+  )
+
+#--------------------------------------------
+#
+df_02_all <- df_02_used %>%
+  dplyr::select("recordid", "hai_have_med_device___vent",
+         "abnormal_temp")
+
+
+###
+```
+# SOFA score (BSI & VAP) 
+```{r}
+###
+# Filter IDs
+df_07a <- data_05[which(data_05$recordid %in% df_baseline_01$recordid), ]
+df_07b <- data_06[which(data_06$recordid %in% df_baseline_01$recordid), ]
+
+### SOFA score (thank Xinxin!)
+#--------------------------------------------
+#--------------------------------------------
+#
+sofa_bsi <- df_07a[which(df_07a$redcap_repeat_instance == 1),] %>% 
+  dplyr::select("recordid", starts_with("sofa_"))
+
+sofa_vap <- df_07b[which(df_07b$redcap_repeat_instance == 1),] %>% 
+  dplyr::select("recordid", starts_with("sofa_"))
+
+# Retain index rows based on infection types
+sofa_vap_id <- inf_add %>%
+  filter(infection_types == "VAP") %>%
+  pull(recordid)
+
+sofa_bsi_id <- inf_add %>%
+  filter(infection_types %in% c("Hospital-acquired BSI", "Healthcare-associated BSI")) %>%
+  pull(recordid)
+
+#
+sofa_bsi <- sofa_bsi[sofa_bsi$recordid %in% sofa_bsi_id,]
+sofa_vap <- sofa_vap[sofa_vap$recordid %in% sofa_vap_id,]
+
+# Standardize column names
+colnames(sofa_bsi) <- gsub("_bsi", "", colnames(sofa_bsi))
+colnames(sofa_vap) <- gsub("_vap", "", colnames(sofa_vap))
+
+# Combine the data frames
+sofa_all <- rbind(sofa_bsi, sofa_vap)
+
+#--------------------------------------------
+#
+sofa_used <- sofa_all %>%
+  dplyr::select("recordid", "sofa_map",
+         "sofa_car_dop", "sofa_car_dob", "sofa_car_epi", "sofa_car_nor", 
+         "sofa_cre_1", "sofa_cre_2"
+         )
+
+# check if only one value in cre_1 or cre_2
+# TRUE = only one column is NA, so only one value exists
+# FALSE = both are NA or both have values
+sofa_used <- sofa_used %>%
+  mutate(
+    one_cre_value = xor(!is.na(sofa_cre_1), !is.na(sofa_cre_2))
+  )
+
+# umol/L --> mg/dL
+sofa_used <- sofa_used %>%
+  mutate(
+    sofa_cre_2_mg = if_else(
+      !is.na(sofa_cre_2),
+      round(sofa_cre_2 * 0.0113, 2),
+      NA_real_
+    )
+  )
+
+# Creatinine in mg
+sofa_used <- sofa_used %>%
+  mutate(
+    cre_mg = coalesce(sofa_cre_1, sofa_cre_2_mg)
+  )
+
+#--------------------------------------------#----------------------------------
+
+
+
+### Vasopressure use
+#--------------------------------------------
+#--------------------------------------------
+#
+sofa_used <- sofa_used %>%
+  mutate(
+    vaso_use = if_else(
+      if_any(c(sofa_car_dop, sofa_car_dob, sofa_car_epi, sofa_car_nor), ~ . == 1),
+      1,
+      0
+    )
+  )
+
+#--------------------------------------------
+### selected variables
+#
+sofa_all <- sofa_used %>%
+  dplyr::select("recordid", "sofa_map",
+         "cre_mg", "vaso_use")
+
+#--------------------------------------------#----------------------------------
+
+### Index F07A, F07B
+# BSI
+df_07a_index <- df_07a[which(df_07a$redcap_repeat_instance == 1),]
+df_07a_index <- df_07a_index[df_07a_index$recordid %in% sofa_bsi_id,]
+
+# VAP
+df_07b_index <- df_07b[which(df_07b$redcap_repeat_instance == 1),]
+df_07b_index <- df_07b_index[df_07b_index$recordid %in% sofa_vap_id,]
+
+###
+```
+# BSI
+```{r}
+###
+### Sources of BSI
+#
+df_source <- df_07a_index %>%
+  dplyr::select("recordid", "bsi_pri_sec", 
+         "bsi_pri_sec_1___1", "bsi_pri_sec_1___2", "bsi_pri_sec_1___3",
+         "bsi_pri_sec_1___4", "bsi_pri_sec_1___5")
+
+###
+```
+# Filter IDs
+```{r}
+# AST
+ast_01 <- ast[which(ast$recordid %in% df_baseline_01$recordid), ]
+
+# Comorbidities
+cmb_cr <- df_baseline_01 %>%
+  dplyr::select("recordid", starts_with("cmb_comorbidities"))
+
+###
+```
+# Outcomes
+```{r}
+### Readmission
+## length (readmission) during the follow-up 28 days since infection onset date 
+# Function to determine from which group to start calculation
+determine_start_group <- function(start_dates, end_dates, inf_onset) {
+  inf_onset_date <- as.Date(inf_onset, format="%Y-%m-%d")
+  for (i in seq_along(end_dates)) {
+    start_date <- as.Date(start_dates[[i]], format="%Y-%m-%d")
+    end_date <- as.Date(end_dates[[i]], format="%Y-%m-%d")
+    if (!is.na(start_date) && !is.na(end_date) && !is.na(inf_onset_date) &&
+        start_date < (inf_onset_date + 28) && end_date > inf_onset_date) {
+      return(i)
+    }
+  }
+  return(NA_integer_)
+}
+
+# ----------------------
+# Function for readm (KA)
+determine_readm_group <- function(start_dates, end_dates, inf_onset, ho_discharge_date) {
+  inf_onset_date <- as.Date(inf_onset, format="%Y-%m-%d")
+  discharge_date <- as.Date(ho_discharge_date, format="%Y-%m-%d")
+  
+  for (i in seq_along(end_dates)) {
+    start_date <- as.Date(start_dates[[i]], format="%Y-%m-%d")
+    end_date <- as.Date(end_dates[[i]], format="%Y-%m-%d")
+    if (!is.na(start_date) && !is.na(end_date) && !is.na(inf_onset_date) && !is.na(discharge_date) && 
+        start_date >= discharge_date &&
+        start_date < (inf_onset_date + 28) && end_date > inf_onset_date) {
+      return(i)
+    }
+  }
+  return(NA_integer_)
+}
+
+# ----------------------
+# Define a function to calculate durations and convert character to Date
+calculate_durations <- function(start_dates, end_dates) {
+  durations <- map2_dbl(start_dates, end_dates, ~ {
+    if (is.na(.x) | is.na(.y)) {
+      return(NA_real_)
+    } else {
+      return(as.numeric(.y - .x))
+    }
+  })
+  durations
+}
+
+# Define a function to calculate total duration with the specific NA handling logic from a specified group
+calculate_total_duration <- function(start_dates, end_dates, group_to_use) {
+  if (is.na(group_to_use)) {
+    return(NA_real_)
+  }
+  total_duration <- 0
+  for (i in group_to_use:length(start_dates)) {
+    if (!is.na(start_dates[i]) && !is.na(end_dates[i])) {
+      total_duration <- total_duration + as.numeric(end_dates[i] - start_dates[i])
+    }
+  }
+  total_duration
+}
+
+# ----------------------
+#
+df_baseline_01 <- df_baseline_01 %>%
+  rowwise() %>%
+  mutate(
+    start_dates_readm = list(as.Date(unlist(dplyr::c_across(starts_with("readm_ap_") & ends_with("_2"))), format="%Y-%m-%d")),
+    end_dates_readm = list(as.Date(unlist(dplyr::c_across(starts_with("readm_ap_") & ends_with("_3"))), format="%Y-%m-%d")),
+    group_to_use_readm = determine_readm_group(start_dates_readm, end_dates_readm, inf_onset, ho_discharge_date),
+    total_readm = calculate_total_duration(start_dates_readm, end_dates_readm, group_to_use_readm)
+    
+  ) %>%
+  mutate(
+    across(starts_with("readm_ap_") & ends_with("_2"), ~ as.Date(.x, format="%Y-%m-%d")),
+    across(starts_with("readm_ap_") & ends_with("_3"), ~ as.Date(.x, format="%Y-%m-%d"))
+  ) %>%
+  ungroup()
+
+### ----------------------------------------------------------------------------
+###
+# total_mv ~ mv_start - mv_end (real mv duration from the data)
+# max_mv ~ maximum mv duration
+# first28_mv ~ mv_duration with first28 (d28 from onset of index episode)
+# max_icu ~ maximum icu duration
+# first28_icu ~ icu_duration with first28 (d28 from onset of index episode)
+#
+first28_progress <- matrix(NA, nrow = nrow(df_baseline_01), ncol = 2)
+colnames(first28_progress) <- c("max_readm", "first28_readm")
+
+# -------------------------------------------
+### READM
+# max_readm
+system.time({
+  for (i in 1:nrow(df_baseline_01)) {
+    group_to_use_readm <- df_baseline_01$group_to_use_readm[i]
+    
+    if (!is.na(group_to_use_readm)) {
+      readm_cols <- grep("^readm_ap_.*_2$", names(df_baseline_01))
+      start_date_readm <- as.Date(unlist(df_baseline_01[i, readm_cols]))[group_to_use_readm]
+      inf_onset_date <- as.Date(df_baseline_01$inf_onset[i])
+      
+      if (!is.na(start_date_readm) && !is.na(inf_onset_date)) {
+        if (start_date_readm <= inf_onset_date) {
+          first28_progress[i, "max_readm"] <- as.numeric(inf_onset_date - start_date_readm) + 28
+        } else {
+          first28_progress[i, "max_readm"] <- 28 - as.numeric(start_date_readm - inf_onset_date)
+        }
+      } else {
+        first28_progress[i, "max_readm"] <- NA
+      }
+    } 
+  }
+})
+
+# first28_readm 
+system.time({
+  for (i in 1:nrow(df_baseline_01)) {
+    group_to_use_readm <- df_baseline_01$group_to_use_readm[i]
+    
+    if (!is.na(group_to_use_readm)) {
+      readm_cols <- grep("^readm_ap_.*_2$", names(df_baseline_01))
+      start_date_readm <- as.Date(unlist(df_baseline_01[i, readm_cols]))[group_to_use_readm]
+      inf_onset_date <- as.Date(df_baseline_01$inf_onset[i])
+      total_readm <- df_baseline_01$total_readm[i]
+      
+      if (!is.na(start_date_readm) && !is.na(inf_onset_date) && !is.na(total_readm)) {
+        if ((start_date_readm <= inf_onset_date) & (first28_progress[i, "max_readm"] >= total_readm)) {
+          first28_progress[i, "first28_readm"] <- total_readm - as.numeric(inf_onset_date - start_date_readm)
+        } else if ((start_date_readm <= inf_onset_date) & (first28_progress[i, "max_readm"] < total_readm)) {
+          first28_progress[i, "first28_readm"] <- 28
+        } else if ((start_date_readm > inf_onset_date) & (first28_progress[i, "max_readm"] >= total_readm)) {
+          first28_progress[i, "first28_readm"] <- total_readm
+        } else if ((start_date_readm > inf_onset_date) & (first28_progress[i, "max_readm"] < total_readm)) {
+          first28_progress[i, "first28_readm"] <- 28 - as.numeric(start_date_readm - inf_onset_date)
+        } else {
+          first28_progress[i, "first28_readm"] <- NA
+        }
+      } else {
+        first28_progress[i, "first28_readm"] <- NA
+      }
+    }  
+  }
+})
+
+###
+# combine to df_baseline 
+df_baseline_01 <- df_baseline_01 %>%
+  mutate(
+    max_readm = first28_progress[, "max_readm"],
+    first28_readm = first28_progress[, "first28_readm"]
+  )
+
+# For those without ICU, MV, readmission
+update_column <- function(df, condition_col, target_col) {
+  condition <- !is.na(df[[condition_col]]) & is.na(df[[target_col]])
+  df[[target_col]][condition] <- 0
+  return(df)  
+}
+
+#
+df_baseline_01 <- update_column(df_baseline_01, "icu_hd_ap", "first28_icu")
+df_baseline_01 <- update_column(df_baseline_01, "mv_ap", "first28_mv")
+df_baseline_01 <- update_column(df_baseline_01, "readm_ap", "first28_readm")
+
+### -------------------------------------------
+# Duration of MV before VAP onset
+# 1st start date of MV
+df_baseline_01$mv_to_onset <- as.numeric(df_baseline_01$inf_onset - df_baseline_01$mv_ap_1_2)
+
+### MV status at onset
+df_baseline_01$mv_at_onset <- ifelse(!is.na(df_baseline_01$mv_to_onset) & df_baseline_01$mv_to_onset >= 0, 1, 0)
+
+#
+table(df_baseline_01$mv_at_onset)
+
+### -------------------------------------------
+### ICU/HD adm at VAP onset ~ ICU/HD adm start before or on VAP onset date
+#
+df_baseline_01$icu_to_onset <- as.numeric(df_baseline_01$inf_onset - df_baseline_01$icu_hd_ap_1_2)
+
+
+### MV status at onset
+df_baseline_01$icu_at_onset <- ifelse(!is.na(df_baseline_01$icu_to_onset) & df_baseline_01$icu_to_onset >= 0, 1, 0)
+
+#
+table(df_baseline_01$icu_at_onset)
+
+table(df_baseline_01$adm_ward_types_new)
+
+### -------------------------------------------
+###
+```
+# first28_progress (re-events)
+```{r}
+### MV
+# reintubation/reMV 
+first28_mv <-  matrix(NA, nrow = nrow(df_baseline_01), ncol = 5)
+colnames(first28_mv) <- c("recordid", "inf_onset",
+                          "group_to_use_mv", "reintub_date", "first28_date")
+
+#
+first28_mv[, "recordid"] <- df_baseline_01$recordid
+
+#
+first28_mv[, "inf_onset"] <- as.character(df_baseline_01$inf_onset)
+
+#
+first28_mv[, "group_to_use_mv"] <- df_baseline_01$group_to_use_mv
+
+### (my first successful complicated code!)
+# Reintub_date within the 28-day period
+# 
+for (i in 1:nrow(df_baseline_01)) {
+  group_to_use_mv <- df_baseline_01$group_to_use_mv[i]
+  
+  if (!is.na(group_to_use_mv) && !is.na(inf_onset_date)) {
+    mv_end_01 <- as.Date(df_baseline_01$mv_ap_1_3[i])
+    mv_end_02 <- as.Date(df_baseline_01$mv_ap_2_3[i])
+    mv_end_03 <- as.Date(df_baseline_01$mv_ap_3_3[i])
+    mv_end_04 <- as.Date(df_baseline_01$mv_ap_4_3[i])
+    
+    mv_start_02 <- as.Date(df_baseline_01$mv_ap_2_2[i])
+    mv_start_03 <- as.Date(df_baseline_01$mv_ap_3_2[i])
+    mv_start_04 <- as.Date(df_baseline_01$mv_ap_4_2[i])
+    mv_start_05 <- as.Date(df_baseline_01$mv_ap_5_2[i])
+    
+    inf_onset_date <- as.Date(df_baseline_01$inf_onset[i])
+    
+      if ((group_to_use_mv == 1) && !is.na(mv_end_01) && !is.na(mv_start_02)) {
+        if ((mv_end_01 < mv_start_02) && (mv_start_02 < (inf_onset_date + 28))) {
+          first28_mv[i, "reintub_date"] <- as.character(mv_start_02)
+        } else {first28_mv[i, "reintub_date"] <- NA}
+        
+      } else if ((group_to_use_mv == 2) && !is.na(mv_end_02) && !is.na(mv_start_03)) {
+      if ((mv_end_02 < mv_start_03) && (mv_start_03 < (inf_onset_date + 28))) {
+        first28_mv[i, "reintub_date"] <- as.character(mv_start_03)
+      } else {first28_mv[i, "reintub_date"] <- NA}
+        
+    } else if ((group_to_use_mv == 3) && !is.na(mv_end_03) && !is.na(mv_start_04)) {
+      if ((mv_end_03 < mv_start_04) && (mv_start_04 < (inf_onset_date + 28))) {
+        first28_mv[i, "reintub_date"] <- as.character(mv_start_04)
+      } else {first28_mv[i, "reintub_date"] <- NA}
+      
+    } else if ((group_to_use_mv == 4) && !is.na(mv_end_04) && !is.na(mv_start_05)) {
+      if ((mv_end_04 < mv_start_05) && (mv_start_05 < (inf_onset_date + 28))) {
+        first28_mv[i, "reintub_date"] <- as.character(mv_start_05)
+      } else {first28_mv[i, "reintub_date"] <- NA}
+    }
+  } else {first28_mv[i, "reintub_date"] <- NA} 
+}
+
+#
+first28_mv <- as.data.frame(first28_mv)
+
+#
+first28_mv$inf_onset <- as.Date(first28_mv$inf_onset, format="%Y-%m-%d")
+
+#
+first28_mv[, "first28_date"] <- df_baseline_01$first28_date
+
+#
+first28_mv$start_dates_mv <- df_baseline_01$start_dates_mv
+      
+first28_mv$end_dates_mv <- df_baseline_01$end_dates_mv
+
+#
+first28_mv$reintub <- ifelse(
+  (!is.na(first28_mv$reintub_date)),
+  1,
+  0
+)
+
+### -------------------------------------------
+### READM
+# 
+first28_readm <-  matrix(NA, nrow = nrow(df_baseline_01), ncol = 5)
+colnames(first28_readm) <- c("recordid", "inf_onset",
+                          "group_to_use_readm", "readm_date", "first28_date")
+
+#
+first28_readm[, "recordid"] <- df_baseline_01$recordid
+
+#
+first28_readm[, "inf_onset"] <- as.character(df_baseline_01$inf_onset)
+
+#
+first28_readm[, "group_to_use_readm"] <- df_baseline_01$group_to_use_readm
+
+### 
+for (i in 1:nrow(df_baseline_01)) {
+  group_to_use_readm <- df_baseline_01$group_to_use_readm[i]
+  
+  if (!is.na(group_to_use_readm) && !is.na(inf_onset_date)) {
+    discharge_date <- as.Date(df_baseline_01$ho_discharge_date[i])
+    readm_end_01 <- as.Date(df_baseline_01$readm_ap_1_3[i])
+    readm_end_02 <- as.Date(df_baseline_01$readm_ap_2_3[i])
+    readm_end_03 <- as.Date(df_baseline_01$readm_ap_3_3[i])
+
+    readm_start_01 <- as.Date(df_baseline_01$readm_ap_1_2[i])
+    readm_start_02 <- as.Date(df_baseline_01$readm_ap_2_2[i])
+    readm_start_03 <- as.Date(df_baseline_01$readm_ap_3_2[i])
+    readm_start_04 <- as.Date(df_baseline_01$readm_ap_4_2[i])
+    
+    inf_onset_date <- as.Date(df_baseline_01$inf_onset[i])
+    
+      if ((group_to_use_readm == 1) && !is.na(discharge_date) && !is.na(readm_start_01)) {
+        if ((discharge_date <= readm_start_01) && (readm_start_01 < (inf_onset_date + 28))) {
+          first28_readm[i, "readm_date"] <- as.character(readm_start_01)
+        } else {first28_readm[i, "readm_date"] <- NA}
+        
+      } else if ((group_to_use_readm == 2) && !is.na(readm_end_01) && !is.na(readm_start_02)) {
+      if ((readm_end_01 <= readm_start_02) && (readm_start_02 < (inf_onset_date + 28))) {
+        first28_readm[i, "readm_date"] <- as.character(readm_start_02)
+      } else {first28_readm[i, "readm_date"] <- NA}
+        
+    } else if ((group_to_use_readm == 3) && !is.na(readm_end_02) && !is.na(readm_start_03)) {
+      if ((readm_end_02 <= readm_start_03) && (readm_start_03 < (inf_onset_date + 28))) {
+        first28_readm[i, "readm_date"] <- as.character(readm_start_03)
+      } else {first28_readm[i, "readm_date"] <- NA}
+      
+    } else if ((group_to_use_readm == 4) && !is.na(readm_end_03) && !is.na(readm_start_04)) {
+      if ((readm_end_03 <= readm_start_04) && (readm_start_04 < (inf_onset_date + 28))) {
+        first28_readm[i, "readm_date"] <- as.character(readm_start_04)
+      } else {first28_readm[i, "readm_date"] <- NA}
+    }
+  } else {first28_readm[i, "readm_date"] <- NA} 
+}
+
+#
+first28_readm <- as.data.frame(first28_readm)
+
+#
+first28_readm[, "first28_date"] <- df_baseline_01$first28_date
+
+#
+first28_readm$readm <- ifelse(
+  (!is.na(first28_readm$readm_date)),
+  1,
+  0
+)
+
+### -------------------------------------------
+### ICU
+# reICU 
+first28_icu <-  matrix(NA, nrow = nrow(df_baseline_01), ncol = 5)
+colnames(first28_icu) <- c("recordid", "inf_onset",
+                          "group_to_use_icu","reicu_date", "first28_date")
+
+#
+first28_icu[, "recordid"] <- df_baseline_01$recordid
+
+#
+first28_icu[, "inf_onset"] <- as.character(df_baseline_01$inf_onset)
+
+#
+first28_icu[, "group_to_use_icu"] <- df_baseline_01$group_to_use_icu
+
+### 
+for (i in 1:nrow(df_baseline_01)) {
+  group_to_use_icu <- df_baseline_01$group_to_use_icu[i]
+  
+  if (!is.na(group_to_use_icu) && !is.na(inf_onset_date)) {
+    icu_end_01 <- as.Date(df_baseline_01$icu_hd_ap_1_3[i])
+    icu_end_02 <- as.Date(df_baseline_01$icu_hd_ap_2_3[i])
+    icu_end_03 <- as.Date(df_baseline_01$icu_hd_ap_3_3[i])
+    icu_end_04 <- as.Date(df_baseline_01$icu_hd_ap_4_3[i])
+    
+    icu_start_02 <- as.Date(df_baseline_01$icu_hd_ap_2_2[i])
+    icu_start_03 <- as.Date(df_baseline_01$icu_hd_ap_3_2[i])
+    icu_start_04 <- as.Date(df_baseline_01$icu_hd_ap_4_2[i])
+    icu_start_05 <- as.Date(df_baseline_01$icu_hd_ap_5_2[i])
+    
+    inf_onset_date <- as.Date(df_baseline_01$inf_onset[i])
+    
+      if ((group_to_use_icu == 1) && !is.na(icu_end_01) && !is.na(icu_start_02)) {
+        if ((icu_end_01 <= icu_start_02) && (icu_start_02 < (inf_onset_date + 28))) {
+          first28_icu[i, "reicu_date"] <- as.character(icu_start_02)
+        } else {first28_icu[i, "reicu_date"] <- NA}
+        
+      } else if ((group_to_use_icu == 2) && !is.na(icu_end_02) && !is.na(icu_start_03)) {
+      if ((icu_end_02 <= icu_start_03) && (icu_start_03 < (inf_onset_date + 28))) {
+        first28_icu[i, "reicu_date"] <- as.character(icu_start_03)
+      } else {first28_icu[i, "reicu_date"] <- NA}
+        
+    } else if ((group_to_use_icu == 3) && !is.na(icu_end_03) && !is.na(icu_start_04)) {
+      if ((icu_end_03 <= icu_start_04) && (icu_start_04 < (inf_onset_date + 28))) {
+        first28_icu[i, "reicu_date"] <- as.character(icu_start_04)
+      } else {first28_icu[i, "reicu_date"] <- NA}
+      
+    } else if ((group_to_use_icu == 4) && !is.na(icu_end_04) && !is.na(icu_start_05)) {
+      if ((icu_end_04 <= icu_start_05) && (icu_start_05 < (inf_onset_date + 28))) {
+        first28_icu[i, "reicu_date"] <- as.character(icu_start_05)
+      } else {first28_icu[i, "reicu_date"] <- NA}
+    }
+  } else {first28_icu[i, "reicu_date"] <- NA} 
+}
+
+#
+first28_icu <- as.data.frame(first28_icu)
+
+#
+first28_icu[, "first28_date"] <- df_baseline_01$first28_date
+
+#
+first28_icu$reicu <- ifelse(
+  (!is.na(first28_icu$reicu_date)),
+  1,
+  0
+)
+
+### -------------------------------------------
+# Combine df
+df_first28_re <- left_join(first28_mv[, c("recordid", "reintub")], first28_readm[, c("recordid", "readm")], by = "recordid")
+
+df_first28_re <- left_join(df_first28_re, first28_icu[, c("recordid", "reicu")], by = "recordid")
+
+#
+df_baseline_01 <- left_join(df_baseline_01, df_first28_re, by = "recordid")
+
+```
+# Median duration (HOSP, MV, ICU) (for boxplot)
+```{r}
+### -------------------------------------------
+## Hospitalization (from the first onset to D28)
+## Keep in mind if the patient died within the 28-day period ?!
+### -------------------------------------------
+### Change name
+# if mortality_date is not NA and < first28_date, this is the date that patient died within the 28-day period
+df_baseline_01 <- df_baseline_01 %>%
+  rename_at ('first28_observed_date', ~ 'first28_observed_date_death')
+
+# censoring or event # How long patients survived from onset within the 28-day period?
+df_baseline_01 <- df_baseline_01 %>%
+  rename_at ('first28_patient_days', ~ 'first28_death_days')
+
+###
+#
+first28_hosp <- matrix(NA, nrow = nrow(df_baseline_01), ncol = 10)
+colnames(first28_hosp) <- c("recordid", "hpd_adm_date", "inf_onset", "first28_date",
+                            "ho_discharge_date", "first28_readm",
+                            "group_to_use_readm", "first28_death", "first28_death_days",
+                            "first28_hosp")
+
+#
+first28_hosp[, "recordid"] <- df_baseline_01$recordid
+
+#
+first28_hosp[, "hpd_adm_date"] <- as.character(df_baseline_01$hpd_adm_date)
+
+#
+first28_hosp[, "inf_onset"] <- as.character(df_baseline_01$inf_onset)
+
+#
+first28_hosp[, "first28_date"] <- as.character(df_baseline_01$first28_date)
+
+#
+first28_hosp[, "ho_discharge_date"] <- as.character(df_baseline_01$ho_discharge_date)
+
+#
+first28_hosp[, "first28_readm"] <- df_baseline_01$first28_readm
+
+#
+first28_hosp[, "group_to_use_readm"] <- df_baseline_01$group_to_use_readm
+
+#
+first28_hosp[, "first28_death"] <- df_baseline_01$first28_death
+
+#
+first28_hosp[, "first28_death_days"] <- df_baseline_01$first28_death_days
+
+# within 28-day period from onset of first VAPs ~ hospital stay caused by first VAPs
+for (i in 1:nrow(df_baseline_01)) {
+  adm_date <- as.Date(df_baseline_01$hpd_adm_date[i])
+  inf_onset_date <- as.Date(df_baseline_01$inf_onset[i])
+  discharge_date <- as.Date(df_baseline_01$ho_discharge_date[i])
+  first28_date <- as.Date(df_baseline_01$first28_date[i])
+  first28_death <- as.numeric(df_baseline_01$first28_death[i])
+
+  if (!is.na(adm_date) && !is.na(inf_onset_date) && !is.na(discharge_date)) {
+     group_to_use_readm <- df_baseline_01$group_to_use_readm[i]
+     if (!is.na(group_to_use_readm) && (adm_date <= inf_onset_date) && (discharge_date < first28_date)) {
+       first28_hosp[i, "first28_hosp"] <- as.numeric(discharge_date - inf_onset_date) + df_baseline_01$first28_readm[i]
+     } else if (first28_death == 1) {
+       first28_hosp[i, "first28_hosp"] <- as.numeric(df_baseline_01$first28_death_days[i])
+     } else if (discharge_date < first28_date) {
+       first28_hosp[i, "first28_hosp"] <- as.numeric(discharge_date - inf_onset_date)
+     } else if (discharge_date >= first28_date) {
+       first28_hosp[i, "first28_hosp"] <- as.numeric(first28_date - inf_onset_date)
+     }
+  } else if (is.na(discharge_date) && first28_death == 0) {
+    first28_hosp[i, "first28_hosp"] <- as.numeric(df_baseline_01$first28_death_days[i])
+  } else {
+    first28_hosp[i, "first28_hosp"] <- NA # NA for wrong number
+  }
+}
+
+#
+first28_hosp <- as.data.frame(first28_hosp)
+
+# change numeric format
+first28_hosp$first28_hosp <- as.numeric(first28_hosp$first28_hosp)
+
+#---------------------
+# combine with df_baseline
+df_baseline_01 <- left_join(df_baseline_01, first28_hosp[, c("recordid", "first28_hosp")], by = "recordid")
+
+### -------------------------------------------
+# first28 duration of hospital, ICU, MV
+#
+df_first28_dur <- first28_hosp %>%
+  dplyr::select ("recordid", "first28_death", "first28_hosp")
+
+df_first28_dur <- left_join(df_first28_dur, df_baseline_01[, c("recordid", "first28_mv")], by = "recordid")
+
+df_first28_dur <- left_join(df_first28_dur, df_baseline_01[, c("recordid", "first28_icu")], by = "recordid")
+
+###
+```
+# Status at D28 (Time-to-event analysis)
+```{r}
+###
+#
+df_status_d28 <- matrix(NA, nrow = nrow(df_baseline_01), ncol = 11)
+colnames(df_status_d28) <- c("recordid", 
+                             "adm_date", "first_onset_date", 
+                             "first28_date", "first28_observed_date_death",
+                             "first28_death", "first28_death_days",
+                             "discharge_date", "discharge_death",
+                             "mortality_date", "mortality")
+
+#
+df_status_d28[, "recordid"] <- df_baseline_01$recordid
+
+#
+df_status_d28[, "adm_date"] <- as.character(df_baseline_01$hpd_adm_date)
+
+#
+df_status_d28[, "first_onset_date"] <- as.character(df_baseline_01$inf_onset)
+
+#
+df_status_d28[, "first28_date"] <- as.character(df_baseline_01$first28_date)
+
+#
+df_status_d28[, "first28_observed_date_death"] <- as.character(df_baseline_01$first28_observed_date_death)
+
+# outcome death
+df_status_d28[, "first28_death"] <- df_baseline_01$first28_death
+
+#
+df_status_d28[, "first28_death_days"] <- as.numeric(df_baseline_01$first28_death_days)
+
+#
+df_status_d28[, "discharge_date"] <- as.character(df_baseline_01$ho_discharge_date)
+
+#
+df_status_d28[, "discharge_death"] <- ifelse(
+  (df_baseline_01$ho_dischargestatus %in% c("DEAD", "MORIBUND")),
+  1,
+  0
+)
+
+#
+df_status_d28[, "mortality_date"] <- as.character(df_baseline_01$mortality_date)
+
+#
+df_status_d28[, "mortality"] <- df_baseline_01$mortality
+
+#
+df_status_d28 <- as.data.frame(df_status_d28)
+
+# change Numeric format
+df_status_d28$first28_death_days <- as.numeric(df_status_d28$first28_death_days)
+
+# change Date format
+df_status_d28[, "first_onset_date"] <- as.Date(df_status_d28[, "first_onset_date"], format="%Y-%m-%d")
+df_status_d28[, "discharge_date"] <- as.Date(df_status_d28[, "discharge_date"])
+df_status_d28[, "first28_date"] <- as.Date(df_status_d28[, "first28_date"])
+
+#
+df_status_d28 <- df_status_d28 %>%
+  mutate (
+     first28_observed_date_discharge = case_when ( # When the patient discharged in the 28-day period from onset date (date)?
+       is.na(discharge_date) ~ first28_date,
+       TRUE ~ pmin(first28_date, discharge_date)
+     ),
+     first28_discharge = case_when ( # Whether the patient was discharged or not in the 28-day period (Y-N)?
+       first28_observed_date_discharge == discharge_date ~ 1,
+       !is.na(first28_observed_date_discharge) ~ 0,
+       TRUE ~ NA_integer_
+     ),
+     first28_discharge_days = as.numeric(first28_observed_date_discharge - df_status_d28$first_onset_date) # censoring or event from 1st onset # how long from onset date that the patient was discharged (days)?
+  )
+
+# ----------------------------------------------------
+# combine with baseline
+df_baseline_01 <- left_join(df_baseline_01, df_status_d28[, c("recordid", 
+                                                              "first28_observed_date_discharge", "first28_discharge", "first28_discharge_days"
+                                                              )], by = "recordid")
+
+```
+# More outcomes at day 28
+```{r}
+###
+#
+first28_status <- matrix(NA, nrow = nrow(df_baseline_01), ncol = 8)
+colnames(first28_status) <- c("recordid", "first28_death", 
+                              "first28_discharge",
+                              "first28_hosp", "readm",
+                              "first28_icu", 
+                              "first28_alive", 
+                              "ho_dischargeto")
+                            
+#
+first28_status[, "recordid"] <- df_baseline_01$recordid
+
+#
+first28_status[, "first28_death"] <- df_baseline_01$first28_death
+
+#
+first28_status[, "first28_discharge"] <- df_baseline_01$first28_discharge
+
+#
+first28_status[, "first28_hosp"] <- df_baseline_01$first28_hosp
+
+#
+first28_status[, "readm"] <- df_baseline_01$readm
+
+#
+first28_status[, "first28_icu"] <- df_baseline_01$first28_icu
+
+
+# Alive & discharged, ICU, non-ICU ~ 1-2-3
+# Non_alive ~ 0
+for (i in 1:nrow(df_baseline_01)) {
+  if (df_baseline_01$first28_death[i] == 1 & df_baseline_01$first28_discharge[i] == 1) {
+    first28_status[i, "first28_alive"] <- 0 #Non_alive
+  } else if (df_baseline_01$first28_death[i] == 0 & df_baseline_01$first28_discharge[i] == 0) {
+      if (df_baseline_01$first28_hosp[i] == 28 & df_baseline_01$first28_icu[i] < 28) {
+        first28_status[i, "first28_alive"] <- 3 #Alive_non_icu
+      } else if (df_baseline_01$first28_hosp[i] == 28 & df_baseline_01$first28_icu[i] == 28) {
+        first28_status[i, "first28_alive"] <- 2 #Alive_icu
+      } 
+  } else if (df_baseline_01$first28_death[i] == 0 & df_baseline_01$first28_discharge[i] == 1) {
+    if (df_baseline_01$first28_hosp[i] <= 28) {
+      first28_status[i, "first28_alive"] <- 1 #Alive_discharge #d28 ~ discharge_date
+    } 
+  }
+}
+   
+#
+first28_status[, "ho_dischargeto"] <- df_baseline_01$ho_dischargeto
+ 
+#
+first28_status <- as.data.frame(first28_status)
+
+# Discharged Home
+# No Moribund-Dead-LAMA Home
+first28_status$discharge_home <- ifelse(first28_status$first28_alive == 1 & first28_status$ho_dischargeto == "HOM",
+                                        1,
+                                        0)
+
+# combine to baseline
+df_baseline_01 <- left_join(df_baseline_01, first28_status[, c("recordid", "first28_alive", "discharge_home")], by = "recordid")
+
+#-------------------------------------
+#-------------------------------------
+### Relocate columns
+#
+df_baseline_01 <- df_baseline_01 %>%
+  relocate(max_mv, .after = total_mv)
+
+#
+df_baseline_01 <- df_baseline_01 %>%
+  relocate(first28_mv, .after = max_mv)
+
+###
+```
+# Antibiotics
+```{r}
+###
+# Antibiotics
+# filter with id_used 
+anti_treat_01 <- anti_treat_poly[which(anti_treat_poly$recordid %in% df_baseline_01$recordid),]
+
+# prior antib to treat AMR infections in Adults (IDSA 2024)
+# No Imipenem-relebactam, Meropenem-vaborbactam, Plazomicin, Sulbactam-durlobactam
+# No Nitrofurantoin as PO
+anti_prior <- c("Amikacin", "Ampicillin/sulbactam", 
+                "Ceftazidime/avibactam", "Ceftolozane/tazobactam", 
+                "Colistin", "Cefoperazone/sulbactam",
+                "Doripenem",
+                "Eravacycline", 
+                "Gentamicin",
+                "Imipenem", 
+                "Meropenem",  
+                "Polymyxin B", 
+                "Tigecycline", "Tobramycin") 
+
+# 
+anti_treat_01_prior <- anti_treat_01 %>%
+  filter(anti_names %in% anti_prior)
+
+```
+# VAP patients categorized by resistant pathogens (for Regression model)
+```{r}
+### Create IDs for resistant bacteria
+# ----------------------------------------------------
+# ----------------------------------------------------
+# CRA
+id_cra <- df_baseline_01$recordid[!is.na(df_baseline_01$aci_car) & df_baseline_01$aci_car == 1]
+
+id_no_cra <- setdiff(df_baseline_01$recordid, id_cra)
+
+# CRE
+id_cre <- df_baseline_01$recordid[!is.na(df_baseline_01$ent_car) & df_baseline_01$ent_car == 1]
+
+id_no_cre <- setdiff(df_baseline_01$recordid, id_cre)
+
+# TGCRE
+id_tgcre <- df_baseline_01$recordid[!is.na(df_baseline_01$ent_thir) & df_baseline_01$ent_thir == 1]
+
+id_no_tgcre <- setdiff(df_baseline_01$recordid, id_tgcre)
+
+# CRP
+id_crp <- df_baseline_01$recordid[!is.na(df_baseline_01$pse_car) & df_baseline_01$pse_car == 1]
+
+id_no_crp <- setdiff(df_baseline_01$recordid, id_crp)
+
+# MRSA
+id_mrsa <- df_baseline_01$recordid[!is.na(df_baseline_01$sa_meth) & df_baseline_01$sa_meth == 1]
+
+id_no_mrsa <- setdiff(df_baseline_01$recordid, id_mrsa)
+
+# ----------------------------------------------------
+###
+resist_cols_pathogens <- list (
+  cra = expr(case_when(
+    recordid %in% id_cra ~ 1, # CRA
+    recordid %in% id_no_cra ~ 0, # all no CRA
+    TRUE ~ NA_real_
+  )),
+  cre = expr(case_when(
+    recordid %in% id_cre ~ 1, # CRE
+    recordid %in% id_no_cre ~ 0,
+    TRUE ~ NA_real_
+  )),
+  tgcre = expr(case_when(
+    recordid %in% id_tgcre ~ 1, # TGCRE
+    recordid %in% id_no_tgcre ~ 0,
+    TRUE ~ NA_real_
+  )),
+  crp = expr(case_when(
+    recordid %in% id_crp ~ 1, # CRP
+    recordid %in% id_no_crp ~ 0,
+    TRUE ~ NA_real_
+  )),
+  mr_sa = expr(case_when(
+    recordid %in% id_mrsa ~ 1, # MRSA
+    recordid %in% id_no_mrsa ~ 0, 
+    TRUE ~ NA_real_
+  ))
+)
+
+# 
+anti_treat_01_prior <- anti_treat_01_prior %>%
+  mutate(!!!resist_cols_pathogens)
+
+# Add to baseline
+df_baseline_01 <- df_baseline_01 %>%
+  mutate(!!!resist_cols_pathogens)
+
+#-------------------------------------
+#-------------------------------------
+### Add None of all
+#
+df_baseline_01 <- df_baseline_01 %>%
+  mutate(nor = if_else(cra == 0 & cre == 0 & crp == 0 & tgcre == 0 & mr_sa == 0, 1, 0))
+
+# relocate
+df_baseline_01 <- df_baseline_01 %>%
+  relocate(nor, .after = mr_sa)
+
+#-------------------------------------
+#-------------------------------------
+### WHO priority groups
+### Critical group: CRA, CRE & TGCRE
+### High group: CRP & MRSA
+# Critical group
+df_baseline_01 <- df_baseline_01 %>%
+  mutate(critical_group = if_else(cra == 1 | cre == 1 | tgcre == 1, 1, 0))
+
+# relocate
+df_baseline_01 <- df_baseline_01 %>%
+  relocate(critical_group, .after = nor)
+
+
+# High group
+df_baseline_01 <- df_baseline_01 %>%
+  mutate(high_group = if_else(crp == 1 | mr_sa == 1, 1, 0))
+
+# relocate
+df_baseline_01 <- df_baseline_01 %>%
+  relocate(high_group, .after = critical_group)
+
+# ----------------------------------------------------
+```
+# Categorized by resistant orgs
+```{r}
+### Categorize the org_type
+#
+org_type <- df_baseline_01 %>%
+  dplyr::select ("recordid", 
+          "aci_car", "ent_car", "ent_thir", "pse_car", "sa_meth",
+          "cra", "cre", "crp", "tgcre", "mr_sa")
+
+# ----------------------------------------------------
+# 1 comes before 0
+# NA ~ Any of Big 4 SUS
+# NA ~ not Big 4: AB, ENT, PA & SA
+org_resistant <- matrix(NA, ncol = 1, nrow = nrow(org_type))
+
+for (i in 1:nrow(org_type)) {
+  if (org_type$cra[i] == 1) {
+    if (org_type$cre[i] == 0 & org_type$crp[i] == 0 & org_type$tgcre[i] == 0 & org_type$mr_sa[i] == 0) {
+      org_resistant[i] <- "CRA"
+    } else if (org_type$cre[i] == 1 | org_type$crp[i] == 1 | org_type$tgcre[i] == 1 | org_type$mr_sa[i] == 1) {
+      org_resistant[i] <- "PRP"
+    }
+  } else if (org_type$cre[i] == 1) {
+    if (org_type$cra[i] == 0 & org_type$crp[i] == 0 & org_type$tgcre[i] == 0 & org_type$mr_sa[i] == 0) {
+      org_resistant[i] <- "CRE"
+    } else if (org_type$cra[i] == 1 | org_type$crp[i] == 1 | org_type$tgcre[i] == 1 | org_type$mr_sa[i] == 1) {
+      org_resistant[i] <- "PRP"
+    } 
+  } else if (org_type$crp[i] == 1) {
+    if (org_type$cra[i] == 0 & org_type$cre[i] == 0 & org_type$tgcre[i] == 0 & org_type$mr_sa[i] == 0) {
+      org_resistant[i] <- "CRP"
+    } else if (org_type$cra[i] == 1 | org_type$cre[i] == 1 | org_type$tgcre[i] == 1 | org_type$mr_sa[i] == 1) {
+      org_resistant[i] <- "PRP"
+    }
+  } else if (org_type$tgcre[i] == 1) {
+    if (org_type$cra[i] == 0 & org_type$cre[i] == 0 & org_type$crp[i] == 0 & org_type$mr_sa[i] == 0) {
+      org_resistant[i] <- "TGCRE"
+    } else if (org_type$cra[i] == 1 | org_type$cre[i] == 1 | org_type$crp[i] == 1 | org_type$mr_sa[i] == 1) {
+      org_resistant[i] <- "PRP"
+    }
+  } else if (org_type$mr_sa[i] == 1) {
+    if (org_type$cra[i] == 0 & org_type$cre[i] == 0 & org_type$crp[i] == 0 & org_type$tgcre[i] == 0) {
+      org_resistant[i] <- "MRSA"
+    } else if (org_type$cra[i] == 1 | org_type$cre[i] == 1 | org_type$crp[i] == 1 | org_type$tgcre[i] == 1) {
+      org_resistant[i] <- "PRP"
+    }
+  } else {
+    org_resistant[i] <- NA 
+  }
+}
+
+# NA ~ none of Big 4: AB, ENT, PA & SA
+org_type <- org_type %>%
+  mutate(org_resistant)
+
+#
+org_type$org_resistant <- as.character(org_type$org_resistant)
+
+# ----------------------------------------------------
+# 
+sum(is.na(org_type$org_resistant))
+
+# combine to baseline
+df_baseline_01 <- left_join(df_baseline_01, org_type[, c("recordid", "org_resistant")], by = "recordid")
+
+# ----------------------------------------------------
+# combine with antib
+anti_treat_01_prior <- left_join(anti_treat_01_prior, org_type[,c("recordid", "org_resistant")], by = "recordid")
+
+# cmb
+cmb_cr <- left_join(cmb_cr, org_type[,c("recordid", "org_resistant")], by = "recordid")
+
+# F02
+df_02_all <- left_join(df_02_all, org_type[,c("recordid", "org_resistant")], by = "recordid")
+
+#
+sofa_all <- left_join(sofa_all, org_type[,c("recordid", "org_resistant")], by = "recordid")
+
+# Source if BSI
+df_source <- left_join(df_source, org_type[,c("recordid", "org_resistant")], by = "recordid")
+
+# median duration
+df_first28_dur <- left_join(df_first28_dur, org_type[,c("recordid", "org_resistant")], by = "recordid")
+
+# ----------------------------------------------------
+```
+# WHO groups 
+```{r}
+###
+#
+df_baseline_01$WHO_group <- ifelse(df_baseline_01$critical_group == 1,
+                                   "critical", 
+                                   ifelse(df_baseline_01$high_group == 1, 
+                                   "high", "other"))
+
+### Combine to all df
+cmb_cr <- left_join(cmb_cr, df_baseline_01[,c("recordid", "WHO_group")], by = "recordid")
+df_02_all <- left_join(df_02_all, df_baseline_01[,c("recordid", "WHO_group")], by = "recordid")
+sofa_all <- left_join(sofa_all, df_baseline_01[,c("recordid", "WHO_group")], by = "recordid")
+df_source <- left_join(df_source, df_baseline_01[,c("recordid", "WHO_group")], by = "recordid")
+
+anti_treat_01_prior <- left_join(anti_treat_01_prior, df_baseline_01[,c("recordid", "WHO_group")], by = "recordid")
+
+```
+# Recent healthcare exposure
+```{r}
+###
+# change column name
+df_baseline_01 <- df_baseline_01 %>%
+  rename_at ('cmb_overnight_rhc_surgery', ~ 'cmb_rhe')
+
+# UNK --> N
+df_baseline_01$cmb_rhe[df_baseline_01$cmb_rhe == "UNK"] <- "N"
+
+# Y ~ 1, N ~ 0
+df_baseline_01$cmb_rhe <- ifelse(df_baseline_01$cmb_rhe == "Y", 1,
+                 ifelse(df_baseline_01$cmb_rhe == "N", 0, NA))
+
+###
+```
+# Save
+```{r}
+#
+data_frames <- list (df_baseline_01,
+                     df_02_all, sofa_all,
+                     df_07a_index, df_07b_index,
+                     df_source,
+                     ast_01, 
+                     anti_treat_01_prior,
+                     cmb_cr, 
+                     df_first28_dur,
+                     org_type)
+
+
+# Save
+file_paths <- c(
+  "data/clean data/general/baseline_all.RData",
+  "data/clean data/general/f02.RData",
+  "data/clean data/general/sofa_add.RData",
+  "data/clean data/general/f07a_bsi_index.RData",
+  "data/clean data/general/f07b_vap_index.RData",
+  "data/clean data/general/bsi_source.RData",
+  "data/clean data/general/ast_index_01.RData",
+  "data/clean data/general/anti_treat_prior_01.RData",
+  "data/clean data/general/comorbidities_01.RData",
+  "data/clean data/general/first28_duration.RData",
+  "data/clean data/general/org_resistant.RData"
+)
+
+#
+for (i in seq_along(data_frames)) {
+  saveRDS(data_frames[[i]], file_paths[i])
+} 
+
+###
+```
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

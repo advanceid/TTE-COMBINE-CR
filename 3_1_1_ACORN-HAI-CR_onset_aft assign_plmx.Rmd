@@ -1,0 +1,222 @@
+---
+title: "ACORN-HAI-CR_clean raw AUG 2025_V11_after 2_1_combine_group"
+author: "Kim Anh"
+date: "2026-09-04"
+output: html_document
+---
+
+# Load packages
+```{r}
+rm(list = ls())
+suppressPackageStartupMessages({
+  require(pacman)
+  pacman::p_load(openxlsx,
+                 data.table,
+                 tidyverse,
+                 devtools,
+                 magrittr,
+                 dplyr,
+                 countrycode,
+                 lubridate,
+                 purrr,
+                 stringr,
+                 rlang,
+                 ggpubr,
+                 plotly)
+})
+```
+# Define working directory
+```{r}
+wd <- "./"
+setwd(wd)
+```
+# Import data
+```{r}
+###
+df <- readRDS("data/clean data/clean/clean/combine_group/sens/baseline_all_combine.RData")
+df_bl <- readRDS("data/clean data/clean/clean/combine_group/sens/baseline_all_combine_bl.RData")
+df_lm <- readRDS("data/clean data/clean/clean/combine_group/sens/baseline_all_combine_lm.RData")
+
+###
+cmb_ori <- readRDS("data/clean data/general/comorbidities_01.RData")
+df_sofa_ori <- readRDS("data/clean data/general/sofa_add.RData")
+df_02_ori <- readRDS("data/clean data/general/f02.RData")
+hos_reason <- read.xlsx("data/hos_reasons.xlsx")
+df_antib_ori <- readRDS("data/clean data/general/anti_treat_prior_01.RData")
+
+###
+```
+# Clean data
+```{r}
+###
+### Filter IDs
+cmb <- cmb_ori[which(cmb_ori$recordid %in% df$recordid),]
+df_sofa <- df_sofa_ori[which(df_sofa_ori$recordid %in% df$recordid),]
+df_02 <- df_02_ori[which(df_02_ori$recordid %in% df$recordid),]
+df_antib <- df_antib_ori[which(df_antib_ori$recordid %in% df$recordid),]
+
+### Combine treatment_group
+cmb <- left_join(cmb, df[, c("recordid", "treatment_strategy")], by = "recordid")
+df_sofa <- left_join(df_sofa, df[, c("recordid", "treatment_strategy")], by = "recordid")
+df_02 <- left_join(df_02, df[, c("recordid", "treatment_strategy")], by = "recordid")
+df_antib <- left_join(df_antib, df[, c("recordid", "treatment_strategy")], by = "recordid")
+
+###
+```
+# Grouping admission reasons
+```{r}
+### Re-classify adm_reason (Luca)
+### For df
+adm_reason_01 <- matrix(NA, ncol = 1, nrow = nrow(df))
+
+for (i in 1:nrow(df)) {
+  if (!is.na(df$hpd_admreason[i])) {
+  if (df$hpd_admreason[i] == "Infectious disease") {
+    adm_reason_01[i,1] <- "Infectious disease"
+  } else if (df$hpd_admreason[i] %in% c("Haematological disease", "Oncologic disorder")) {
+    adm_reason_01[i,1] <- "Hae_Onc"
+  } else if (df$hpd_admreason[i] %in% c("Orthopaedic condition", "Trauma", "Gynaecological disorder", "Genitourinary disorder")) {
+    adm_reason_01[i,1] <- "Surgical"
+  } else if (df$hpd_admreason[i] %in% c ("Cardiovascular condition", "Pulmonary disease", "Renal disorder", 
+                                             "Gastrointestinal disorder", "Neurological disease", "Endocrine / Metabolic disorder", 
+                                             "Dermatological disease", "Connective tissue disease")) {
+    adm_reason_01[i,1] <- "Internal diseases"
+  } else if (df$hpd_admreason[i] == "Undetermined") {
+    adm_reason_01[i,1] <- "Others"
+  } else {adm_reason_01[i,1] <- "Others"}
+  } else {adm_reason_01[i,1] <- NA_character_}
+}
+
+# Combine into df
+df <- df %>%
+  mutate(adm_reason_01)
+
+# Convert the variable type
+df$adm_reason_01 <- as.character(df$adm_reason_01)
+
+#-------------------------------------
+### For df_ipw_bl
+adm_reason_01_bl <- matrix(NA, ncol = 1, nrow = nrow(df_bl))
+
+for (i in 1:nrow(df_bl)) {
+  if (!is.na(df_bl$hpd_admreason[i])) {
+  if (df_bl$hpd_admreason[i] == "Infectious disease") {
+    adm_reason_01_bl[i,1] <- "Infectious disease"
+  } else if (df_bl$hpd_admreason[i] %in% c("Haematological disease", "Oncologic disorder")) {
+    adm_reason_01_bl[i,1] <- "Hae_Onc"
+  } else if (df_bl$hpd_admreason[i] %in% c("Orthopaedic condition", "Trauma", "Gynaecological disorder", "Genitourinary disorder")) {
+    adm_reason_01_bl[i,1] <- "Surgical"
+  } else if (df_bl$hpd_admreason[i] %in% c ("Cardiovascular condition", "Pulmonary disease", "Renal disorder", 
+                                             "Gastrointestinal disorder", "Neurological disease", "Endocrine / Metabolic disorder", 
+                                             "Dermatological disease", "Connective tissue disease")) {
+    adm_reason_01_bl[i,1] <- "Internal diseases"
+  } else if (df_bl$hpd_admreason[i] == "Undetermined") {
+    adm_reason_01_bl[i,1] <- "Others"
+  } else {adm_reason_01_bl[i,1] <- "Others"}
+  } else {adm_reason_01_bl[i,1] <- NA_character_}
+}
+
+# Combine into df_bl
+df_bl <- df_bl %>%
+  mutate(adm_reason_01_bl)
+
+# Convert the variable type
+df_bl$adm_reason_01_bl <- as.character(df_bl$adm_reason_01_bl)
+
+#-------------------------------------
+### For df_ipw_lm
+adm_reason_01_lm <- matrix(NA, ncol = 1, nrow = nrow(df_lm))
+
+for (i in 1:nrow(df_lm)) {
+  if (!is.na(df_lm$hpd_admreason[i])) {
+  if (df_lm$hpd_admreason[i] == "Infectious disease") {
+    adm_reason_01_lm[i,1] <- "Infectious disease"
+  } else if (df_lm$hpd_admreason[i] %in% c("Haematological disease", "Oncologic disorder")) {
+    adm_reason_01_lm[i,1] <- "Hae_Onc"
+  } else if (df_lm$hpd_admreason[i] %in% c("Orthopaedic condition", "Trauma", "Gynaecological disorder", "Genitourinary disorder")) {
+    adm_reason_01_lm[i,1] <- "Surgical"
+  } else if (df_lm$hpd_admreason[i] %in% c ("Cardiovascular condition", "Pulmonary disease", "Renal disorder", 
+                                             "Gastrointestinal disorder", "Neurological disease", "Endocrine / Metabolic disorder", 
+                                             "Dermatological disease", "Connective tissue disease")) {
+    adm_reason_01_lm[i,1] <- "Internal diseases"
+  } else if (df_lm$hpd_admreason[i] == "Undetermined") {
+    adm_reason_01_lm[i,1] <- "Others"
+  } else {adm_reason_01_lm[i,1] <- "Others"}
+  } else {adm_reason_01_lm[i,1] <- NA_character_}
+}
+
+# Combine into df_lm
+df_lm <- df_lm %>%
+  mutate(adm_reason_01_lm)
+
+# Convert the variable type
+df_lm$adm_reason_01_lm <- as.character(df_lm$adm_reason_01_lm)
+
+
+###-----------------------------------------------------------------------------
+### combine df
+### For df
+df_list <- list(df, df_02, df_sofa)
+
+# Convert the `treatment_strategy` column to factor type in all data frames
+df_list <- lapply(df_list, function(df) {
+  df %>% mutate(treatment_strategy = as.factor(treatment_strategy))
+})
+
+df <- reduce(df_list, left_join, by = c("recordid", "treatment_strategy", "org_resistant", "WHO_group"))
+
+#-------------------------------------
+### For df_ipw_bl
+df_list_bl <- list(df_bl, df_02, df_sofa)
+
+# Convert the `treatment_strategy` column to factor type in all data frames
+df_list_bl <- lapply(df_list_bl, function(df_bl) {
+  df_bl %>% mutate(treatment_strategy = as.factor(treatment_strategy))
+})
+
+df_bl <- reduce(df_list_bl, left_join, by = c("recordid", "treatment_strategy", "org_resistant", "WHO_group"))
+
+#-------------------------------------
+### For df_ipw_lm
+df_list_lm <- list(df_lm, df_02, df_sofa)
+
+# Convert the `treatment_strategy` column to factor type in all data frames
+df_list_lm <- lapply(df_list_lm, function(df_lm) {
+  df_lm %>% mutate(treatment_strategy = as.factor(treatment_strategy))
+})
+
+df_lm <- reduce(df_list_lm, left_join, by = c("recordid", "treatment_strategy", "org_resistant", "WHO_group"))
+
+
+###-----------------------------------------------------------------------------
+###
+```
+# Save
+```{r}
+### Save clean data for Baseline Tables
+saveRDS(df, file = "data/clean data/clean/clean/combine_group/sens/baseline_all_clean_combine.RData")
+
+### Save clean data for IPW
+saveRDS(df_bl, file = "data/clean data/clean/clean/combine_group/sens/ipw/baseline_ipw_clean_combine.RData")
+saveRDS(df_lm, file = "data/clean data/clean/clean/combine_group/sens/ipw/landmark_ipw_clean_combine.RData")
+
+```
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
